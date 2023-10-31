@@ -9,5 +9,5 @@ Long-range glutamatergic inputs from the cortex and thalamus are critical for mo
 
 [2. BUILD REFERENCE GENOME](2_BUILD_REFERENCE.md)
 
-[3. ALIGNMENT AND RAW COUNT TABLES](3_ALIGN_COUNT.md)
+[3. ALIGNMENT AND COUNT](3_ALIGN_COUNT.md)
 

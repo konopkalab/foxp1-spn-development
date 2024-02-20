@@ -670,3 +670,62 @@ save(seuObj, seuObjSel, file = "SEURAT_NK_P18_CKO_RES_HARMONY_UPDATED_ANNOTATED_
 
 
 ```
+
+
+### Intronic Reads Ratio
+```{R}
+## Load annotated seurat object
+load("SEURAT_NK_P18_CKO_RES_HARMONY_UPDATED.RData")
+# seuObj
+
+as.data.frame(table(seuObj$GenoVirAgeSample))
+#               Var1  Freq
+# 1 CKO_CTL_P18_3BF1 10834
+# 2 CKO_CTL_P18_3BM3 11390
+# 3 CKO_CTL_P18_3BM4  7243
+# 4 CKO_RES_P18_3BM8 20586
+# 5 CKO_RES_P18_3CF5 10169
+# 6 CKO_RES_P18_3CF8 10073
+# 7    WT_CTL_P18_C1  9507
+# 8    WT_CTL_P18_C2 10996
+# 9    WT_CTL_P18_C3  9206
+
+metaTemp <- as.data.frame(seuObj@meta.data)
+
+##------------------------------------
+## load intronic reads ratios
+load("NK_INTRONIC_READS_RATIO_P18.RData")
+# WT_CTL_P18_C1_IR, WT_CTL_P18_C2_IR, WT_CTL_P18_C3_IR, CKO_CTL_P18_3BF1_IR, CKO_CTL_P18_3BM3_IR, CKO_CTL_P18_3BM4_IR, CKO_RES_P18_3BM8_IR, CKO_RES_P18_3CF5_IR, CKO_RES_P18_3CF8_IR
+
+row.names(WT_CTL_P18_C1_IR) <- paste("P18_CTL_C1_", row.names(WT_CTL_P18_C1_IR), sep = "")
+row.names(WT_CTL_P18_C2_IR) <- paste("P18_CTL_C2_", row.names(WT_CTL_P18_C2_IR), sep = "")
+row.names(WT_CTL_P18_C3_IR) <- paste("P18_CTL_C3_", row.names(WT_CTL_P18_C3_IR), sep = "")
+row.names(CKO_CTL_P18_3BF1_IR) <- paste("P18_CTL_3BF1_", row.names(CKO_CTL_P18_3BF1_IR), sep = "")
+row.names(CKO_CTL_P18_3BM3_IR) <- paste("P18_CTL_3BM3_", row.names(CKO_CTL_P18_3BM3_IR), sep = "")
+row.names(CKO_CTL_P18_3BM4_IR) <- paste("P18_CTL_3BM4_", row.names(CKO_CTL_P18_3BM4_IR), sep = "")
+row.names(CKO_RES_P18_3BM8_IR) <- paste("P18_RES_3BM8_", row.names(CKO_RES_P18_3BM8_IR), sep = "")
+row.names(CKO_RES_P18_3CF5_IR) <- paste("P18_RES_3CF5_", row.names(CKO_RES_P18_3CF5_IR), sep = "")
+row.names(CKO_RES_P18_3CF8_IR) <- paste("P18_RES_3CF8_", row.names(CKO_RES_P18_3CF8_IR), sep = "")
+
+intronic_ratio <- rbind(WT_CTL_P18_C1_IR, WT_CTL_P18_C2_IR, WT_CTL_P18_C3_IR, CKO_CTL_P18_3BF1_IR, CKO_CTL_P18_3BM3_IR, CKO_CTL_P18_3BM4_IR, CKO_RES_P18_3BM8_IR, CKO_RES_P18_3CF5_IR, CKO_RES_P18_3CF8_IR)
+
+metaTemp2 <- merge(metaTemp, intronic_ratio, by = "row.names")
+row.names(metaTemp2) <- metaTemp2$Row.names
+metaTemp2$Row.names <- NULL
+
+# Plot nuclear fraction per cell type
+p1 <- ggboxplot(metaTemp2, x = 'CellType_Cluster', y = 'nuclear_fraction', color = 'CellType') + rotate_x_text(90)
+ggsave("NuclearFraction_Per_CellType.pdf", p1, width = 20, height = 10, units = "in", dpi = 300)
+
+pdf('NuclearFraction_Per_Cluster.pdf')
+ggscatter(metaTemp2, x = 'CellType_Cluster', y = 'nuclear_fraction')
+dev.off()
+
+metaIRR <- metaTemp2$nuclear_fraction
+names(metaIRR) <- row.names(metaTemp2)
+
+seuObj$INTRONIC_READS_RATIO <- metaIRR
+
+save(seuObj, file = "SEURAT_NK_P18_CKO_RES_HARMONY_UPDATED_INTRONIC_RATIO.RData")
+
+```

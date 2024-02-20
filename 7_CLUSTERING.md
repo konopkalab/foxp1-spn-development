@@ -8,7 +8,7 @@ module load hdf5_18/1.8.17
 module load R/4.1.1-gccmkl
 ```
 
-## Run Harmony
+## Harmony
 ```{R}
 ## Libraries
 rm(list = ls())
@@ -287,5 +287,386 @@ Idents(seuObj) <- "RNA_snn_res.1.2"
 seuObj.markers <- FindAllMarkers(seuObj, only.pos = TRUE) #, min.pct = 0, logfc.threshold = 0)
 write.table(seuObj.markers, "SEURAT_NK_P18_CKO_RES_HARMONY_RES_1.2_CLUSTER_MARKERS.txt", row.names = TRUE, col.names = TRUE, quote = FALSE, sep = "\t")
 save(seuObj.markers, file = "SEURAT_NK_P18_CKO_RES_HARMONY_RES_1.2_CLUSTER_MARKERS.RData")
+
+```
+
+### Annotate Clusters
+```{R}
+
+##------------------------------------
+## Annotate Clusters
+rm(list = ls())
+library(Seurat)
+library(dplyr)
+library(Matrix)
+library(ggplot2)
+library(gridExtra)
+library(reshape2)
+library(ggrepel)
+library(reticulate)
+library(WGCNA)
+
+
+cluMarkers <- read.table("SEURAT_NK_P18_CKO_RES_HARMONY_RES_1.2_CLUSTER_MARKERS.txt", sep = "\t", header = TRUE)
+tab <- cluMarkers
+# tab <- tab[tab$p_val_adj <= 0.05 & tab$avg_log2FC >= 0.75 & tab$pct.1 >= 0.75,]
+tab <- tab[tab$p_val_adj <= 0.05 & tab$avg_log2FC >= 0.5,]
+# tab <- tab[tab$p_val_adj <= 0.05 & tab$pct.1 >= 0.25,]
+tab <- tab[c(7,6)]
+tab$cluster <- as.factor(paste("Cluster_", sprintf("%02d", as.numeric(as.character(tab$cluster))), sep=""))
+colnames(tab)=c("Gene","DEFINITION")
+Genes=as.data.frame(table(tab$DEFINITION))
+
+
+load("/work/Neuroinformatics_Core/akulk1/CELLRANGER/NITIN_DATA/A_JAN2022/05_SEURAT/MISC/Saunders2018DEG.RData")
+# degSaunders
+GeneSets <- degSaunders
+
+
+for(i in 1:length(GeneSets)){
+	colnames(GeneSets[[i]])[1] <- "Gene"
+}
+
+ln=length(GeneSets)
+cl=length(Genes$Var1)
+TEMP=list()
+INT=list()
+for (i in 1:ln)
+{
+TEMP[[i]]=tab[tab$Gene %in% GeneSets[[i]]$Gene,]
+INT[[i]]=as.data.frame(table(TEMP[[i]]$DEFINITION))
+}
+names(INT)=names(GeneSets)
+names(TEMP)=names(GeneSets)
+
+# Create the matrix for each GeneSet
+NROWS <- sapply(GeneSets,nrow)
+
+#
+#               GeneSet
+#              +       -
+#          +-------+-------+
+#        + |   a   |   b   |
+#  Module  +-------+-------+
+#        - |   c   |   d   |
+#          +-------+-------+
+
+for (i in 1:length(INT))
+{
+INT[[i]]$b <- NROWS[[i]]-INT[[i]]$Freq
+INT[[i]]$c <- Genes$Freq-INT[[i]]$Freq 
+INT[[i]]$d <- length(unique(sort(cluMarkers$gene)))-Genes$Freq-nrow(GeneSets[[i]]) #19776 #15585 #13517 #nrow(tab) #8321 # length(unique(sort(cluMarkers$gene)))(genes in seurat object) 
+}
+
+# sum(Genes$Freq)
+RunFisher <- function(row, alt = 'greater', cnf = 0.85) {
+	f <- fisher.test(matrix(row, nrow = 2), alternative = alt, conf.level = cnf)
+	return(c(row,
+			P_val = f$p.value,
+			LogP = -log10(f$p.value), 
+			OR = f$estimate[[1]],
+			OR_Low = f$conf.int[1],
+			OR_Up = f$conf.int[2]))
+}
+
+# run
+FisherMat=list()
+for (i in 1:length(INT))
+{
+FisherMat[[i]] <- t(apply(INT[[i]][,2:5], 1, RunFisher))
+rownames(FisherMat[[i]]) <- INT[[i]]$Var1
+FisherMat[[i]] <- FisherMat[[i]][rownames(FisherMat[[i]]) != "grey",]
+}
+names(FisherMat)<-names(INT)
+save(FisherMat, TEMP, file= "NK_SEURAT_RES_1.2_FisherOutput_Saunders_Enrich.RData")
+
+
+# Create matrices of Pval
+tmp<-list()
+FisherP<-matrix()
+rowNames <- rownames(FisherMat[[1]])
+colNames <- names(FisherMat)
+for (i in 1:length(INT))
+{
+tmp[[i]] <- cbind(as.numeric(FisherMat[[i]][,5]))
+FisherP <- do.call(cbind,tmp)
+}
+rownames(FisherP) <- rowNames
+colnames(FisherP) <- colNames
+
+# Create matrices of OR
+tmp<-list()
+FisherOR<-matrix()
+rowNames <- rownames(FisherMat[[1]])
+colNames <- names(FisherMat)
+for (i in 1:length(INT))
+{
+tmp[[i]] <- cbind(as.numeric(FisherMat[[i]][,6]))
+FisherOR <- do.call(cbind,tmp)
+}
+rownames(FisherOR) <- rowNames
+colnames(FisherOR) <- colNames
+
+# Pval Adjusted
+library(magrittr)
+FisherAdj <- FisherP %>% as.matrix %>% as.vector %>% p.adjust(method='fdr') %>% matrix(ncol=ncol(FisherP))
+rownames(FisherAdj) <- rowNames
+colnames(FisherAdj) <- colNames
+
+FisherAdj[FisherAdj>0.05]=1
+FisherOR[FisherOR < 1]=0
+
+
+pdf("NK_SEURAT_RES_1.2_FisherOutput_Saunders_Enrich.pdf", width=12, height=16, pointsize=12)
+par(mar=c(15, 7, 2, 2))
+df=-log10(FisherAdj)
+LabelMat = paste(signif(FisherOR, 2), "\n(",signif(FisherAdj, 1), ")", sep = "")
+LabelMat[LabelMat == "0\n(1)"] <- NA
+labeledHeatmap(Matrix = df, 
+xLabels = colnames(df), 
+yLabels = rownames(df), 
+colorLabels =FALSE,
+colors=colorRampPalette(c("white", "red"))(50),
+textMatrix=LabelMat, 
+setStdMargins = FALSE, 
+cex.text = 0.5,
+xLabelsAngle = 90)
+dev.off()
+
+
+
+FisherORt <- as.data.frame(t(FisherOR))
+colnames(FisherORt) <- paste(colnames(FisherORt), "OR", sep = "_")
+
+FisherAdjt <- as.data.frame(t(FisherAdj))
+colnames(FisherAdjt) <- paste(colnames(FisherAdjt), "Pval", sep = "_")
+
+FisherData <- merge(FisherORt, FisherAdjt, by = "row.names")
+row.names(FisherData) <- FisherData$Row.names
+FisherData$Row.names <- NULL
+
+FisherData2 <- FisherData[,order(colnames(FisherData))]
+write.table(FisherData2, "NK_SEURAT_RES_1.2_FisherOutput_Saunders_PlotData.txt", row.names = T, col.names = T, quote = F, sep = "\t")
+
+```
+
+### Update Seurat Object
+```{R}
+
+##------------------------------------
+## Update Seurat Object
+rm(list = ls())
+library(Seurat)
+library(dplyr)
+library(Matrix)
+library(ggplot2)
+library(gridExtra)
+library(reshape2)
+library(ggrepel)
+library(reticulate)
+library(WGCNA)
+library(scCustomize)
+
+load("SEURAT_NK_P18_CKO_RES_HARMONY.RData")
+# seuObj
+
+Idents(seuObj) <- "integrated_snn_res.1.2"
+
+metaTemp <- as.data.frame(seuObj@meta.data)
+metaTemp$CellBarcode <- row.names(metaTemp)
+
+annotations <- read.table("NK_SEURAT_ANNOTATION_PER_CLUSTER_1.2.txt", header = TRUE, sep = "\t")
+
+annotations2 <- merge(metaTemp, annotations, by = "RNA_snn_res.1.2")
+
+annotations3 <- annotations2$CellType
+names(annotations3) <- annotations2$CellBarcode
+
+seuObj[["CellType"]] <- annotations3
+seuObj[["CellType_Cluster"]] <- paste(seuObj@meta.data$CellType, seuObj@meta.data$RNA_snn_res.1.2, sep = "_")
+
+
+pumap1a <- DimPlot_scCustom(seurat_object = seuObj, pt.size = 0.01, group.by = "CellType", raster = TRUE, label = TRUE, label.size = 2, colors_use = DiscretePalette_scCustomize(num_colors = length(unique(sort(seuObj$CellType))), palette = "varibow"), repel = TRUE) + NoLegend()
+ggsave("NK_SEURAT_PLOT_UMAP_CELLTYPE.PDF", plot = pumap1a, width = 6, height = 6, units = "in", dpi = 150)
+
+pumap1b <- DimPlot_scCustom(seurat_object = seuObj, pt.size = 0.01, group.by = "CellType", raster = TRUE, label = FALSE, colors_use = DiscretePalette_scCustomize(num_colors = length(unique(sort(seuObj$CellType))), palette = "varibow")) + facet_wrap(~CellType, nrow = 4)
+ggsave("NK_SEURAT_PLOT_UMAP_CELLTYPE_FACET.PDF", plot = pumap1b, width = 12, height = 12, units = "in", dpi = 150)
+
+pumap1c <- DimPlot_scCustom(seurat_object = seuObj, pt.size = 0.01, group.by = "CellType", raster = TRUE, label = FALSE, label.size = 2, colors_use = DiscretePalette_scCustomize(num_colors = length(unique(sort(seuObj$CellType))), palette = "varibow")) #+ NoLegend()
+ggsave("NK_SEURAT_PLOT_UMAP_CELLTYPE_NOLABEL.PDF", plot = pumap1c, width = 8, height = 6, units = "in", dpi = 150)
+
+pumap5a <- DimPlot_scCustom(seurat_object = seuObj, pt.size = 0.01, group.by = "CellType_Cluster", raster = TRUE, label = TRUE, label.size = 2, colors_use = DiscretePalette_scCustomize(num_colors = length(unique(sort(seuObj$CellType_Cluster))), palette = "varibow"), repel = TRUE) + NoLegend()
+ggsave("NK_SEURAT_PLOT_UMAP_CELLTYPE_CLUSTER.PDF", plot = pumap5a, width = 6, height = 6, units = "in", dpi = 150)
+
+pumap5b <- DimPlot_scCustom(seurat_object = seuObj, pt.size = 0.01, group.by = "CellType_Cluster", raster = TRUE, label = FALSE, colors_use = DiscretePalette_scCustomize(num_colors = length(unique(sort(seuObj$CellType_Cluster))), palette = "varibow")) + facet_wrap(~CellType_Cluster, nrow = 5) + NoLegend()
+ggsave("NK_SEURAT_PLOT_UMAP_CELLTYPE_CLUSTER_FACET.PDF", plot = pumap5b, width = 28, height = 16, units = "in", dpi = 150)
+
+p6 <- Stacked_VlnPlot(seurat_object = seuObj, group.by = "CellType", features = c("nCount_RNA", "nFeature_RNA"), x_lab_rotate = TRUE, ggplot_default_colors = TRUE)
+ggsave(filename = "NK_SEURAT_CELLTYPE_VIOLINPLOT_nUMI.pdf", plot = p6, width = 12, height = 8, units = "in", dpi = 300)
+
+
+save(seuObj, file = "SEURAT_NK_P18_CKO_RES_HARMONY_UPDATED.RData")
+
+```
+
+
+### WPRE MCHERRY
+```{R}
+## Libraries
+rm(list = ls())
+library(Seurat)
+library(dplyr)
+library(Matrix)
+library(ggplot2)
+library(gridExtra)
+library(reshape2)
+library(ggrepel)
+library(reticulate)
+library(clustree)
+library(harmony)
+library(scCustomize)
+options(future.globals.maxSize= 50000 * 1024^2)
+
+## load Seurat Harmony object
+load("SEURAT_NK_P18_CKO_RES_HARMONY_UPDATED.RData")
+# seuObj
+
+
+## WPRE-MCHERRY
+## WPRE | SEPT 2022
+c1wpre <- Read10X("/work/Neuroinformatics_Core/akulk1/CELLRANGER/NITIN_DATA/D_SEP2022/02_COUNT_NK_WPREMCHERRY/WT_1_Amp/outs/filtered_feature_bc_matrix")
+colnames(c1wpre) <- paste("P18_CTL_C1", colnames(c1wpre), sep = "_")
+c1wpre2 <- as.data.frame(c1wpre["WPRE",])
+colnames(c1wpre2) <- "WPRE"
+
+c2wpre <- Read10X("/work/Neuroinformatics_Core/akulk1/CELLRANGER/NITIN_DATA/D_SEP2022/02_COUNT_NK_WPREMCHERRY/WT_2_Amp/outs/filtered_feature_bc_matrix")
+colnames(c2wpre) <- paste("P18_CTL_C2", colnames(c2wpre), sep = "_")
+c2wpre2 <- as.data.frame(c2wpre["WPRE",])
+colnames(c2wpre2) <- "WPRE"
+
+c3wpre <- Read10X("/work/Neuroinformatics_Core/akulk1/CELLRANGER/NITIN_DATA/D_SEP2022/02_COUNT_NK_WPREMCHERRY/WT_3_Amp/outs/filtered_feature_bc_matrix")
+colnames(c3wpre) <- paste("P18_CTL_C3", colnames(c3wpre), sep = "_")
+c3wpre2 <- as.data.frame(c3wpre["WPRE",])
+colnames(c3wpre2) <- "WPRE"
+
+wpreDataSept2022 <- rbind(c1wpre2, c2wpre2, c3wpre2)
+
+
+
+## WPRE | JAN 2022
+nk3bf1c <- Read10X("/work/Neuroinformatics_Core/akulk1/CELLRANGER/NITIN_DATA/A_JAN2022/03_COUNT/NK_MAY2022_WPRE_MCHERRY/NK3BF1c/outs/filtered_feature_bc_matrix")
+colnames(nk3bf1c) <- paste("P18_CTL_3BF1", colnames(nk3bf1c), sep = "_")
+nk3bf1c2 <- as.data.frame(nk3bf1c["WPRE",])
+colnames(nk3bf1c2) <- "WPRE"
+
+nk3bm3c <- Read10X("/work/Neuroinformatics_Core/akulk1/CELLRANGER/NITIN_DATA/A_JAN2022/03_COUNT/NK_MAY2022_WPRE_MCHERRY/NK3BM3c/outs/filtered_feature_bc_matrix")
+colnames(nk3bm3c) <- paste("P18_CTL_3BM3", colnames(nk3bm3c), sep = "_")
+nk3bm3c2 <- as.data.frame(nk3bm3c["WPRE",])
+colnames(nk3bm3c2) <- "WPRE"
+
+nk3bm4c <- Read10X("/work/Neuroinformatics_Core/akulk1/CELLRANGER/NITIN_DATA/A_JAN2022/03_COUNT/NK_MAY2022_WPRE_MCHERRY/NK3BM4c/outs/filtered_feature_bc_matrix")
+colnames(nk3bm4c) <- paste("P18_CTL_3BM4", colnames(nk3bm4c), sep = "_")
+nk3bm4c2 <- as.data.frame(nk3bm4c["WPRE",])
+colnames(nk3bm4c2) <- "WPRE"
+
+wpreDataJan2022 <- rbind(nk3bf1c2, nk3bm3c2, nk3bm4c2)
+
+
+
+## MCHERRY | JAN 2022
+nk3bm8c <- Read10X("/work/Neuroinformatics_Core/akulk1/CELLRANGER/NITIN_DATA/A_JAN2022/03_COUNT/NK_MAY2022_WPRE_MCHERRY/NK3BM8c/outs/filtered_feature_bc_matrix")
+colnames(nk3bm8c) <- paste("P18_RES_3BM8", colnames(nk3bm8c), sep = "_")
+nk3bm8c2 <- as.data.frame(nk3bm8c["MCHERRY",])
+colnames(nk3bm8c2) <- "MCHERRY"
+
+nk3cf5c <- Read10X("/work/Neuroinformatics_Core/akulk1/CELLRANGER/NITIN_DATA/A_JAN2022/03_COUNT/NK_MAY2022_WPRE_MCHERRY/NK3CF5c/outs/filtered_feature_bc_matrix")
+colnames(nk3cf5c) <- paste("P18_RES_3CF5", colnames(nk3cf5c), sep = "_")
+nk3cf5c2 <- as.data.frame(nk3cf5c["MCHERRY",])
+colnames(nk3cf5c2) <- "MCHERRY"
+
+nk3cf8c <- Read10X("/work/Neuroinformatics_Core/akulk1/CELLRANGER/NITIN_DATA/A_JAN2022/03_COUNT/NK_MAY2022_WPRE_MCHERRY/NK3CF8c/outs/filtered_feature_bc_matrix")
+colnames(nk3cf8c) <- paste("P18_RES_3CF8", colnames(nk3cf8c), sep = "_")
+nk3cf8c2 <- as.data.frame(nk3cf8c["MCHERRY",])
+colnames(nk3cf8c2) <- "MCHERRY"
+
+mcherryDataJan2022 <- rbind(nk3bm8c2, nk3cf5c2, nk3cf8c2)
+
+
+wpreData <- rbind(wpreDataJan2022, wpreDataSept2022)
+mcherryData <- mcherryDataJan2022
+
+
+## Update Seurat Object
+metaTemp <- as.data.frame(seuObj@meta.data)
+
+wpreCommon <- merge(metaTemp, wpreData, by = "row.names", all.x = TRUE)
+mcherryCommon <- merge(metaTemp, mcherryData, by = "row.names", all.x = TRUE)
+
+
+metaWPRE <- wpreCommon$WPRE
+names(metaWPRE) <- wpreCommon$Row.names
+
+metaMCHERRY <- mcherryCommon$MCHERRY
+names(metaMCHERRY) <- mcherryCommon$Row.names
+
+seuObj$WPRE <- metaWPRE
+seuObj$WPRE[is.na(seuObj$WPRE)] <- 0
+seuObj$MCHERRY <- metaMCHERRY
+seuObj$MCHERRY[is.na(seuObj$MCHERRY)] <- 0
+
+
+
+## WPRE-MCHERRY by sample
+seumeta <- as.data.frame(seuObj@meta.data)
+
+df <- seumeta[,c("GenoVirAgeSample", "CellType_Cluster", "WPRE", "MCHERRY")]
+
+
+for(myclu in unique(sort(df$CellType_Cluster)))
+    {
+    print(myclu)
+    seumeta_sub <- seumeta[seumeta$CellType_Cluster == myclu,]
+    print(nrow(seumeta_sub))
+    wpresub <- as.data.frame.matrix(table(seumeta_sub$GenoVirAgeSample, seumeta_sub$WPRE))
+    mcherrysub <- as.data.frame.matrix(table(seumeta_sub$GenoVirAgeSample, seumeta_sub$MCHERRY))
+    write.table(wpresub, paste("NK_ALL_WPRE_BY_SAMPLE_BY_", myclu, ".txt", sep = ""), row.names = TRUE, col.names = TRUE, quote = FALSE, sep = "\t")
+    write.table(mcherrysub, paste("NK_ALL_MCHERRY_BY_SAMPLE_BY_", myclu, ".txt", sep = ""), row.names = TRUE, col.names = TRUE, quote = FALSE, sep = "\t")
+    }
+
+
+## Updated Meta Data
+seuMeta <- as.data.frame(seuObj@meta.data)
+seuMeta$CellBarcode <- row.names(seuMeta)
+
+annotation <- read.table("NK_SEURAT_ANNOTATION_PER_CLUSTER_1.2_2.txt", header = TRUE, sep = "\t")
+seuMetaUpdated <- merge(seuMeta, annotation, by = "RNA_snn_res.1.2")
+
+celltype2 <- seuMetaUpdated$CellType2
+names(celltype2) <- seuMetaUpdated$CellBarcode
+
+seuObj$CellType2 <- celltype2
+seuObj$CellType2_Cluster <- paste(seuObj$CellType2, seuObj$RNA_snn_res.1.2, sep = "_")
+
+pumap1a <- DimPlot_scCustom(seurat_object = seuObj, pt.size = 0.01, group.by = "CellType2", raster = TRUE, label = TRUE, label.size = 2, ggplot_default_colors = TRUE) + NoLegend()
+ggsave("SEURAT_NK_P18_CKO_RES_HARMONY_UMAP_CELLTYPE.PDF", plot = pumap1a, width = 6, height = 6, units = "in", dpi = 150)
+
+pumap1b <- DimPlot_scCustom(seurat_object = seuObj, pt.size = 0.01, group.by = "CellType2_Cluster", raster = TRUE, label = TRUE, label.size = 2, ggplot_default_colors = TRUE) + NoLegend()
+ggsave("SEURAT_NK_P18_CKO_RES_HARMONY_UMAP_CELLTYPE_CLUSTER.PDF", plot = pumap1b, width = 6, height = 6, units = "in", dpi = 150)
+
+
+Idents(seuObj) <- "CellType2"
+
+seuObjSel <- subset(seuObj, idents = "Undetermined", invert = TRUE)
+
+pumap2a <- DimPlot_scCustom(seurat_object = seuObjSel, pt.size = 0.01, group.by = "CellType2", raster = TRUE, label = TRUE, label.size = 2, ggplot_default_colors = TRUE) + NoLegend()
+ggsave("SEURAT_NK_P18_CKO_RES_HARMONY_UMAP_CELLTYPE_CLEANED.PDF", plot = pumap2a, width = 6, height = 6, units = "in", dpi = 150)
+
+pumap2b <- DimPlot_scCustom(seurat_object = seuObjSel, pt.size = 0.01, group.by = "CellType2_Cluster", raster = TRUE, label = TRUE, label.size = 2, ggplot_default_colors = TRUE) + NoLegend()
+ggsave("SEURAT_NK_P18_CKO_RES_HARMONY_UMAP_CELLTYPE_CLUSTER_CLEANED.PDF", plot = pumap2b, width = 6, height = 6, units = "in", dpi = 150)
+
+
+## Save Seurat Object
+save(seuObj, seuObjSel, file = "SEURAT_NK_P18_CKO_RES_HARMONY_UPDATED_ANNOTATED_CLEANED.RData")
+
 
 ```
